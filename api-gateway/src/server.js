@@ -8,7 +8,7 @@ const { RedisStore } = require("rate-limit-redis");
 const logger = require("./utils/logger");
 const proxy = require("express-http-proxy");
 const errorHandler = require("./middleware/errorhandler");
-const { validateToken } = require("./middleware/authMiddleware");
+//const { validateToken } = require("./middleware/authMiddleware");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -32,4 +32,54 @@ const ratelimitOptions = rateLimit({
   store: new RedisStore({
     sendCommand: (...args) => redisClient.call(...args),
   }),
+});
+
+app.use(ratelimitOptions);
+
+app.use((req, res, next) => {
+  logger.info(`Received ${req.method} request to ${req.url}`);
+  logger.info(`Request body, ${req.body}`);
+  next();
+});
+
+const proxyOptions = {
+  proxyReqPathResolver: (req) => {
+    return req.originalUrl.replace(/^\/v1/, "/api");
+  },
+  proxyErrorHandler: (err, res, next) => {
+    logger.error(`Proxy error: ${err.message}`);
+    res.status(500).json({
+      message: `Internal server error`,
+      error: err.message,
+    });
+  },
+};
+
+//setting up proxy for our identity service
+app.use(
+  "/v1/auth",
+  proxy(process.env.IDENTITY_SERVICE_URL, {
+    ...proxyOptions,
+    proxyReqOptDecorator: (proxyReqOpts, srcReq) => {
+      proxyReqOpts.headers["Content-Type"] = "application/json";
+      return proxyReqOpts;
+    },
+    userResDecorator: (proxyRes, proxyResData, userReq, userRes) => {
+      logger.info(
+        `Response received from Identity service: ${proxyRes.statusCode}`
+      );
+
+      return proxyResData;
+    },
+  })
+);
+
+app.use(errorHandler);
+
+app.listen(PORT, () => {
+  logger.info(`API Gateway is running on port ${PORT}`);
+  logger.info(
+    `Identity service is running on port ${process.env.IDENTITY_SERVICE_URL}`
+  );
+  logger.info(`Redis Url ${process.env.REDIS_URL}`);
 });
